@@ -161,7 +161,7 @@ const wss = new WebSocketServer({
 });
 
 app.use(cors());
-app.use(express.json());
+
 
 // Optional API key validation (if configured)
 app.use('/api', validateApiKey);
@@ -653,44 +653,85 @@ function handleShellConnection(ws) {
     console.error('❌ Shell WebSocket error:', error);
   });
 }
-// Audio transcription endpoint
+
+
+// Audio transcription endpoint for Azure OpenAI
 app.post('/api/transcribe', authenticateToken, async (req, res) => {
   try {
     const multer = (await import('multer')).default;
-    const upload = multer({ storage: multer.memoryStorage() });
+    
+    // Configure multer with size limits
+    const upload = multer({ 
+      storage: multer.memoryStorage(),
+      limits: {
+        fileSize: 25 * 1024 * 1024, // 25MB limit
+        fieldSize: 25 * 1024 * 1024  // 25MB field size limit
+      },
+      fileFilter: (req, file, cb) => {
+        // Accept audio files
+        if (file.mimetype.startsWith('audio/')) {
+          cb(null, true);
+        } else {
+          cb(new Error('Only audio files are allowed'));
+        }
+      }
+    });
     
     // Handle multipart form data
     upload.single('audio')(req, res, async (err) => {
       if (err) {
-        return res.status(400).json({ error: 'Failed to process audio file' });
+        console.error('Multer error:', err);
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(413).json({ error: 'Audio file too large. Maximum size is 25MB.' });
+        }
+        return res.status(400).json({ error: `Failed to process audio file: ${err.message}` });
       }
       
       if (!req.file) {
         return res.status(400).json({ error: 'No audio file provided' });
       }
+
+      console.log(`Received audio file: ${req.file.size} bytes, type: ${req.file.mimetype}`);
       
-      const apiKey = process.env.OPENAI_API_KEY;
-      if (!apiKey) {
-        return res.status(500).json({ error: 'OpenAI API key not configured. Please set OPENAI_API_KEY in server environment.' });
+      // Azure OpenAI configuration
+      const azureApiKey = process.env.AZURE_OPENAI_API_KEY;
+      const azureEndpoint = process.env.AZURE_OPENAI_ENDPOINT;
+      const apiVersion = process.env.AZURE_OPENAI_API_VERSION || '2023-05-15';
+      
+      console.log('🔍 Azure OpenAI Environment check:');
+      console.log('AZURE_OPENAI_API_KEY exists:', !!azureApiKey);
+      console.log('AZURE_OPENAI_ENDPOINT:', azureEndpoint);
+      console.log('API Version:', apiVersion);
+      
+      if (!azureApiKey || !azureEndpoint) {
+        return res.status(500).json({ 
+          error: 'Azure OpenAI configuration missing. Please set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in server environment.' 
+        });
       }
       
       try {
-        // Create form data for OpenAI
+        // Create form data for Azure OpenAI
         const FormData = (await import('form-data')).default;
         const formData = new FormData();
         formData.append('file', req.file.buffer, {
-          filename: req.file.originalname,
+          filename: req.file.originalname || 'audio.webm',
           contentType: req.file.mimetype
         });
-        formData.append('model', 'whisper-1');
         formData.append('response_format', 'json');
         formData.append('language', 'en');
         
-        // Make request to OpenAI
-        const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+        // Azure OpenAI Whisper endpoint
+        // Note: You need to have a Whisper deployment in your Azure OpenAI resource
+        const deploymentName = 'whisper-1'; // Replace with your actual deployment name
+        const azureUrl = `${azureEndpoint}/openai/deployments/${deploymentName}/audio/transcriptions?api-version=${apiVersion}`;
+        
+        console.log('Making request to Azure OpenAI:', azureUrl);
+        
+        // Make request to Azure OpenAI
+        const response = await fetch(azureUrl, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${apiKey}`,
+            'api-key': azureApiKey,
             ...formData.getHeaders()
           },
           body: formData
@@ -698,7 +739,8 @@ app.post('/api/transcribe', authenticateToken, async (req, res) => {
         
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.error?.message || `Whisper API error: ${response.status}`);
+          console.error('Azure OpenAI error:', response.status, errorData);
+          throw new Error(errorData.error?.message || `Azure OpenAI error: ${response.status}`);
         }
         
         const data = await response.json();
@@ -717,18 +759,14 @@ app.post('/api/transcribe', authenticateToken, async (req, res) => {
           return res.json({ text: transcribedText });
         }
         
-        // Handle different enhancement modes
+        // Handle different enhancement modes using Azure OpenAI Chat
         try {
-          const OpenAI = (await import('openai')).default;
-          const openai = new OpenAI({ apiKey });
-          
           let prompt, systemMessage, temperature = 0.7, maxTokens = 800;
           
           switch (mode) {
             case 'prompt':
               systemMessage = 'You are an expert prompt engineer who creates clear, detailed, and effective prompts.';
               prompt = `You are an expert prompt engineer. Transform the following rough instruction into a clear, detailed, and context-aware AI prompt.
-
 Your enhanced prompt should:
 1. Be specific and unambiguous
 2. Include relevant context and constraints
@@ -736,10 +774,8 @@ Your enhanced prompt should:
 4. Use clear, actionable language
 5. Include examples where helpful
 6. Consider edge cases and potential ambiguities
-
 Transform this rough instruction into a well-crafted prompt:
 "${transcribedText}"
-
 Enhanced prompt:`;
               break;
               
@@ -747,9 +783,8 @@ Enhanced prompt:`;
             case 'instructions':
             case 'architect':
               systemMessage = 'You are a helpful assistant that formats ideas into clear, actionable instructions for AI agents.';
-              temperature = 0.5; // Lower temperature for more controlled output
+              temperature = 0.5;
               prompt = `Transform the following idea into clear, well-structured instructions that an AI agent can easily understand and execute.
-
 IMPORTANT RULES:
 - Format as clear, step-by-step instructions
 - Add reasonable implementation details based on common patterns
@@ -757,42 +792,54 @@ IMPORTANT RULES:
 - Do NOT add features or functionality not mentioned
 - Keep the original intent and scope intact
 - Use clear, actionable language an agent can follow
-
 Transform this idea into agent-friendly instructions:
 "${transcribedText}"
-
 Agent instructions:`;
               break;
               
             default:
-              // No enhancement needed
               break;
           }
           
-          // Only make GPT call if we have a prompt
+          // Only make chat completion call if we have a prompt
           if (prompt) {
-            const completion = await openai.chat.completions.create({
-              model: 'gpt-4o-mini',
-              messages: [
-                { role: 'system', content: systemMessage },
-                { role: 'user', content: prompt }
-              ],
-              temperature: temperature,
-              max_tokens: maxTokens
+            // Use Azure OpenAI for chat completion
+            const chatDeploymentName = 'gpt-4o-mini'; // Replace with your actual chat deployment name
+            const chatUrl = `${azureEndpoint}/openai/deployments/${chatDeploymentName}/chat/completions?api-version=${apiVersion}`;
+            
+            const chatResponse = await fetch(chatUrl, {
+              method: 'POST',
+              headers: {
+                'api-key': azureApiKey,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                messages: [
+                  { role: 'system', content: systemMessage },
+                  { role: 'user', content: prompt }
+                ],
+                temperature: temperature,
+                max_tokens: maxTokens
+              })
             });
             
-            transcribedText = completion.choices[0].message.content || transcribedText;
+            if (chatResponse.ok) {
+              const chatData = await chatResponse.json();
+              transcribedText = chatData.choices[0]?.message?.content || transcribedText;
+            } else {
+              console.error('Azure OpenAI chat completion failed:', chatResponse.status);
+            }
           }
           
         } catch (gptError) {
-          console.error('GPT processing error:', gptError);
-          // Fall back to original transcription if GPT fails
+          console.error('Azure OpenAI chat processing error:', gptError);
+          // Fall back to original transcription if chat completion fails
         }
         
         res.json({ text: transcribedText });
         
       } catch (error) {
-        console.error('Transcription error:', error);
+        console.error('Azure OpenAI transcription error:', error);
         res.status(500).json({ error: error.message });
       }
     });
@@ -801,6 +848,8 @@ Agent instructions:`;
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+
 
 // Image upload endpoint
 app.post('/api/projects/:projectName/upload-images', authenticateToken, async (req, res) => {

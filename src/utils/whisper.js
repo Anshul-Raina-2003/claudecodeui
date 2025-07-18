@@ -1,17 +1,33 @@
 import { api } from './api';
 
 export async function transcribeWithWhisper(audioBlob, onStatusChange) {
+    console.log('transcribeWithWhisper called with:', {
+        blobSize: audioBlob?.size,
+        blobType: audioBlob?.type,
+        hasOnStatusChange: typeof onStatusChange === 'function'
+    });
+
     const formData = new FormData();
     const fileName = `recording_${Date.now()}.webm`;
     const file = new File([audioBlob], fileName, { type: audioBlob.type });
+    
+    console.log('Created file:', {
+        name: file.name,
+        size: file.size,
+        type: file.type
+    });
     
     formData.append('audio', file);
     
     const whisperMode = window.localStorage.getItem('whisperMode') || 'default';
     formData.append('mode', whisperMode);
+
+    console.log('FormData entries:');
+    for (let [key, value] of formData.entries()) {
+        console.log(key, value);
+    }
   
     try {
-      // Start with transcribing state
       if (onStatusChange) {
         onStatusChange('transcribing');
       }
@@ -34,4 +50,4 @@ export async function transcribeWithWhisper(audioBlob, onStatusChange) {
       }
       throw error;
     }
-  }
+}

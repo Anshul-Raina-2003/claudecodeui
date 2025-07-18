@@ -26,6 +26,52 @@ import ClaudeStatus from './ClaudeStatus';
 import { MicButton } from './MicButton.jsx';
 import { api } from '../utils/api';
 
+// Add this component near the top of your file, after the imports
+const DownloadButton = ({ url, filename = 'query-results.csv' }) => {
+  const handleDownload = async () => {
+    try {
+      // Fetch the file from the imagekitUrl URL
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to download: ${response.status}`);
+      }
+
+      // Get the blob data
+      const blob = await response.blob();
+
+      // Create a temporary URL for the blob
+      const downloadUrl = window.URL.createObjectURL(blob);
+
+      // Create a temporary anchor element and trigger download
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+
+      // Clean up
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error('Download failed:', error);
+      alert('Failed to download file: ' + error.message);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleDownload}
+      className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+      title="Download CSV file"
+    >
+      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-4-4m4 4l4-4m-6 4h8a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2-2v12a2 2 0 002 2z" />
+      </svg>
+      Download CSV
+    </button>
+  );
+};
+
 const EditableCodeBlock = memo(({ code, language, onSave, onCancel }) => {
   console.log('EditableCodeBlock component mounted/updated:', { code: code?.substring(0, 50), language });
   const [isEditing, setIsEditing] = useState(false);
@@ -68,9 +114,9 @@ const EditableCodeBlock = memo(({ code, language, onSave, onCancel }) => {
     setIsExecuting(true);
     setExecutionResult(null);
     setExecutionError(null);
-
+    
     try {
-      const response = await fetch('http://172.19.4.228:8000/query/run', {
+      const response = await fetch(env.URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -166,7 +212,9 @@ const EditableCodeBlock = memo(({ code, language, onSave, onCancel }) => {
           className="w-full p-3 bg-transparent text-gray-800 dark:text-gray-200 font-mono text-sm resize-none border-none outline-none min-h-[100px] max-h-[60vh] overflow-y-auto"
           spellCheck={false}
         />
-        
+
+        {/* Execution Results */}
+        // In your EditableCodeBlock component, update the execution results section
         {/* Execution Results */}
         {(executionResult || executionError) && (
           <div className="border-t border-gray-300 dark:border-gray-600">
@@ -182,17 +230,74 @@ const EditableCodeBlock = memo(({ code, language, onSave, onCancel }) => {
               </div>
             ) : (
               <div className="p-3 bg-green-50 dark:bg-green-900/20 border-l-4 border-green-500">
-                <div className="flex items-center gap-2 mb-2">
-                  <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <span className="text-sm font-medium text-green-700 dark:text-green-300">Query Results</span>
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2">
+                    <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-sm font-medium text-green-700 dark:text-green-300">Query Results</span>
+                    {executionResult.rowCount && (
+                      <span className="text-xs text-green-600 dark:text-green-400">
+                        ({executionResult.rowCount} rows)
+                      </span>
+                    )}
+                  </div>
+                  {/* Download button - show if imagekitUrl exists */}
+                  {executionResult.imagekitUrl && (
+                    <DownloadButton
+                      url={executionResult.imagekitUrl}
+                      filename={`query-results-${new Date().toISOString().slice(0, 10)}.csv`}
+                    />
+                  )}
                 </div>
-                <div className="max-h-64 overflow-auto">
-                  <pre className="text-xs text-green-800 dark:text-green-200 whitespace-pre-wrap">
-                    {JSON.stringify(executionResult, null, 2)}
-                  </pre>
-                </div>
+
+                {/* Preview data if available */}
+                {executionResult.preview && executionResult.preview.length > 0 && (
+                  <div className="mb-3">
+                    <div className="text-xs font-medium text-green-700 dark:text-green-300 mb-2">Preview:</div>
+                    <div className="bg-white dark:bg-gray-800 rounded border overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead className="bg-gray-50 dark:bg-gray-700">
+                          <tr>
+                            {Object.keys(executionResult.preview[0]).map(key => (
+                              <th key={key} className="px-2 py-1 text-left font-medium text-gray-700 dark:text-gray-300">
+                                {key}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {executionResult.preview.slice(0, 5).map((row, idx) => (
+                            <tr key={idx} className="border-t border-gray-200 dark:border-gray-600">
+                              {Object.values(row).map((value, cellIdx) => (
+                                <td key={cellIdx} className="px-2 py-1 text-gray-800 dark:text-gray-200">
+                                  {String(value)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                      {executionResult.preview.length > 5 && (
+                        <div className="px-2 py-1 text-xs text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-700">
+                          ... and {executionResult.preview.length - 5} more rows
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Full result in collapsible section */}
+                <details className="mt-2">
+                  <summary className="text-xs text-green-600 dark:text-green-400 cursor-pointer hover:text-green-700 dark:hover:text-green-300">
+                    View full response
+                  </summary>
+                  <div className="max-h-64 overflow-auto mt-2">
+                    <pre className="text-xs text-green-800 dark:text-green-200 whitespace-pre-wrap">
+                      {JSON.stringify(executionResult, null, 2)}
+                    </pre>
+                  </div>
+                </details>
               </div>
             )}
           </div>
@@ -2801,8 +2906,8 @@ function ChatInterface({ selectedProject, selectedSession, ws, sendMessage, mess
                 </svg>
               </button>
 
-              {/* Mic button - HIDDEN */}
-              <div className="absolute right-16 sm:right-16 top-1/2 transform -translate-y-1/2" style={{ display: 'none' }}>
+
+              <div className="absolute right-16 sm:right-16 top-1/2 transform -translate-y-1/2">
                 <MicButton
                   onTranscript={handleTranscript}
                   className="w-10 h-10 sm:w-10 sm:h-10"

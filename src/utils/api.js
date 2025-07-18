@@ -2,20 +2,23 @@
 export const authenticatedFetch = (url, options = {}) => {
   const token = localStorage.getItem('auth-token');
   
-  const defaultHeaders = {
-    'Content-Type': 'application/json',
+  const headers = {
+    ...options.headers,
   };
   
+  // Only set Content-Type if it's not a FormData request
+  // FormData requests need the browser to set Content-Type automatically
+  if (!(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
+  
   if (token) {
-    defaultHeaders['Authorization'] = `Bearer ${token}`;
+    headers['Authorization'] = `Bearer ${token}`;
   }
   
   return fetch(url, {
     ...options,
-    headers: {
-      ...defaultHeaders,
-      ...options.headers,
-    },
+    headers,
   });
 };
 
